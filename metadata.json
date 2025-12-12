@@ -1,0 +1,5 @@
+{
+  "name": "ScriptFlow AI",
+  "description": "An intelligent script generation assistant that takes you from a simple idea to a full script, including character designs and visualization using the Gemini Banana model.",
+  "requestFramePermissions": []
+}
