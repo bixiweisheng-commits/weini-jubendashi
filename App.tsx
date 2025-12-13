@@ -1,10 +1,11 @@
+
 import React, { useState, useEffect } from 'react';
 import { ScriptProject, AppStep, Genre, Character, EpisodePlan } from './types';
 import { StepIdea } from './components/StepIdea';
 import { StepOutline } from './components/StepOutline';
 import { StepCharacters } from './components/StepCharacters';
 import { StepScript } from './components/StepScript';
-import { generateOutline, extractCharacters, generateCharacterImage, generateEpisodeScript, analyzeAndRewrite, planEpisodes } from './services/geminiService';
+import { generateOutlineOptions, extractCharacters, generateCharacterImage, generateEpisodeScript, analyzeAndRewrite, planEpisodes } from './services/geminiService';
 import { Clapperboard, BookOpen, Users, PenTool, ChevronRight, Settings, Key } from 'lucide-react';
 import { Button } from './components/Button';
 
@@ -13,15 +14,44 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   
-  // API Key State
+  // API Key State with Safe Fallback for Browser Environment
   const [apiKey, setApiKey] = useState<string>(() => {
-    return localStorage.getItem('gemini_api_key') || process.env.API_KEY || '';
+    let key = '';
+    try {
+      key = localStorage.getItem('gemini_api_key') || '';
+    } catch (e) {
+      console.warn('LocalStorage access denied or unavailable');
+    }
+
+    if (!key) {
+      try {
+        // Safe access: process might be undefined in pure browser
+        if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+          key = process.env.API_KEY;
+        }
+      } catch (e) {
+        // ignore error
+      }
+    }
+    return key || '';
   });
 
   const [tempKey, setTempKey] = useState(apiKey);
+  const [outlineOptions, setOutlineOptions] = useState<string[]>([]);
+
+  // Auto-show modal if no key is present on mount
+  useEffect(() => {
+    if (!apiKey) {
+      setShowApiKeyModal(true);
+    }
+  }, [apiKey]);
 
   const saveApiKey = () => {
-    localStorage.setItem('gemini_api_key', tempKey);
+    try {
+      localStorage.setItem('gemini_api_key', tempKey);
+    } catch (e) {
+      console.warn('Could not save to localStorage');
+    }
     setApiKey(tempKey);
     setShowApiKeyModal(false);
   };
@@ -58,6 +88,7 @@ export default function App() {
         genre: result.genre as Genre, 
         outline: result.outline 
       }));
+      setOutlineOptions([]); // Clear options since we have a definite one
       setCurrentStep(AppStep.OUTLINE);
     } catch (e) {
       alert("分析失败，请检查文本内容或API Key。");
@@ -66,12 +97,14 @@ export default function App() {
     }
   };
 
-  const handleGenerateOutline = async () => {
+  const handleGenerateOutlineOptions = async () => {
     if (!ensureKey()) return;
     setIsGenerating(true);
     try {
-      const outline = await generateOutline(apiKey, project.idea, project.genre);
-      setProject(p => ({ ...p, outline }));
+      // Clear previous selection
+      setProject(p => ({ ...p, outline: '' }));
+      const options = await generateOutlineOptions(apiKey, project.idea, project.genre);
+      setOutlineOptions(options);
       setCurrentStep(AppStep.OUTLINE);
     } catch (e) {
       alert("生成大纲失败，请检查网络或 Key 是否有效。");
@@ -80,11 +113,17 @@ export default function App() {
     }
   };
 
-  const handleRegenerateOutline = async () => {
-    await handleGenerateOutline();
+  const handleRegenerateOptions = async () => {
+      await handleGenerateOutlineOptions();
   };
 
-  const handleExtractCharacters = async () => {
+  const handleExtractCharacters = async (force: boolean = false) => {
+    // If characters exist and we are not forcing a refresh, just move to next step
+    if (!force && project.characters.length > 0) {
+        setCurrentStep(AppStep.CHARACTERS);
+        return;
+    }
+
     if (!ensureKey()) return;
     setIsGenerating(true);
     try {
@@ -139,9 +178,11 @@ export default function App() {
 
   const handleToScriptStep = async () => {
       setCurrentStep(AppStep.SCRIPT);
-      // Automatically plan episodes if not already done
+      // Auto trigger planning if empty
       if (project.episodePlan.length === 0) {
-          await handlePlanEpisodes();
+          // We can do it here or let the user click the button in StepScript.
+          // Let's let the user click to give them control, 
+          // but StepScript shows a big prompt.
       }
   };
 
@@ -166,22 +207,23 @@ export default function App() {
     }
   };
 
-  // Batch Generation Logic
   const handleBatchGenerate = async () => {
     if (!ensureKey()) return;
     setIsGenerating(true);
     
     try {
+      // Loop through plan
       let currentEpisodes = { ...project.episodes };
-
       for (const plan of project.episodePlan) {
+        // Skip if already exists? Or overwrite? Let's skip existing to save tokens unless user clears it.
         if (currentEpisodes[plan.number]) continue;
 
         const prevContent = currentEpisodes[plan.number - 1] || "";
         const content = await generateEpisodeScript(apiKey, project.outline, project.characters, plan, prevContent);
         
+        // Update state progressively so user sees progress? 
+        // In React batching might hide it, but we can try setting state each time.
         currentEpisodes[plan.number] = content;
-        
         setProject(p => ({
           ...p,
           episodes: { ...p.episodes, [plan.number]: content }
@@ -194,7 +236,7 @@ export default function App() {
     }
   };
 
-  const handleExport = () => {
+  const handleExportFull = () => {
     let content = `# ${project.idea}\n\n`;
     content += `## 剧本大纲\n${project.outline}\n\n`;
     content += `## 人物小传\n`;
@@ -214,13 +256,13 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `剧本_${new Date().toISOString().slice(0,10)}.txt`;
+    a.download = `全剧本_${new Date().toISOString().slice(0,10)}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const handleExportWord = () => {
-    // Basic HTML template for Word
+  const handleExportFullWord = () => {
+    // Generate simple HTML compatible with Word
     let content = `
       <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
       <head><meta charset='utf-8'><title>${project.idea}</title></head>
@@ -258,9 +300,52 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `剧本_${new Date().toISOString().slice(0,10)}.doc`;
+    a.download = `全剧本_${new Date().toISOString().slice(0,10)}.doc`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleExportSingleEpisode = (epNum: number) => {
+    const content = project.episodes[epNum];
+    if (!content) return;
+    
+    const plan = project.episodePlan.find(p => p.number === epNum);
+    const title = plan ? `第${plan.number}集_${plan.title}` : `第${epNum}集`;
+    
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${title}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportSingleEpisodeWord = (epNum: number) => {
+     const scriptContent = project.episodes[epNum];
+     if (!scriptContent) return;
+
+     const plan = project.episodePlan.find(p => p.number === epNum);
+     const title = plan ? `第${plan.number}集 ${plan.title}` : `第${epNum}集`;
+
+     const content = `
+        <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+        <head><meta charset='utf-8'><title>${title}</title></head>
+        <body>
+        <h1>${title}</h1>
+        <p><strong>摘要：</strong>${plan?.summary || ''}</p>
+        <hr/>
+        <div>${scriptContent.replace(/\n/g, '<br/>')}</div>
+        </body></html>
+     `;
+
+     const blob = new Blob([content], { type: 'application/msword' });
+     const url = URL.createObjectURL(blob);
+     const a = document.createElement('a');
+     a.href = url;
+     a.download = `${title}.doc`;
+     a.click();
+     URL.revokeObjectURL(url);
   };
 
   const handleUpdatePlan = (newPlan: EpisodePlan[]) => {
@@ -342,7 +427,7 @@ export default function App() {
                 setIdea={(val) => setProject(p => ({ ...p, idea: val }))}
                 genre={project.genre}
                 setGenre={(val) => setProject(p => ({ ...p, genre: val }))}
-                onNext={handleGenerateOutline}
+                onNext={handleGenerateOutlineOptions}
                 onAnalyze={handleAnalyze}
                 isGenerating={isGenerating}
                 />
@@ -352,10 +437,12 @@ export default function App() {
           {currentStep === AppStep.OUTLINE && (
             <StepOutline
               outline={project.outline}
+              options={outlineOptions}
               setOutline={(val) => setProject(p => ({ ...p, outline: val }))}
               onNext={handleExtractCharacters}
-              onRegenerate={handleRegenerateOutline}
+              onRegenerate={handleRegenerateOptions}
               isGenerating={isGenerating}
+              hasCharacters={project.characters.length > 0}
             />
           )}
 
@@ -384,8 +471,10 @@ export default function App() {
               isGenerating={isGenerating}
               onAutoPlan={handlePlanEpisodes}
               onBatchGenerate={handleBatchGenerate}
-              onExport={handleExport}
-              onExportWord={handleExportWord}
+              onExport={handleExportFull}
+              onExportWord={handleExportFullWord}
+              onExportEpisode={handleExportSingleEpisode}
+              onExportEpisodeWord={handleExportSingleEpisodeWord}
               onUpdatePlan={handleUpdatePlan}
             />
           )}

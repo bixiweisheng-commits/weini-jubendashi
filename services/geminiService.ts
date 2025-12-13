@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { Character, Genre, EpisodePlan } from "../types";
 
@@ -10,39 +11,56 @@ const getClient = (apiKey: string) => {
   return new GoogleGenAI({ apiKey });
 };
 
-export const generateOutline = async (apiKey: string, idea: string, genre: Genre): Promise<string> => {
+// New: Generate 3 distinct outline options
+export const generateOutlineOptions = async (apiKey: string, idea: string, genre: Genre): Promise<string[]> => {
   const ai = getClient(apiKey);
   const prompt = `
-    作为一名资深的金牌编剧，请根据以下创意为我创作一份精彩的剧本大纲。
+    作为一名资深的金牌编剧，请根据以下创意为我构思 **三个截然不同** 的故事大纲方案。
     
     类型：${genre}
     创意核心：${idea}
 
-    请严格按照以下结构进行创作（必须包含这四个部分）：
-    1. **钩子 (The Hook)**: 开篇即抓住观众眼球的冲突或悬念。
-    2. **反转 (The Twist)**: 剧情发展中的意想不到的转折，打破常规。
-    3. **高潮 (The Climax/Second Twist)**: 全剧最高潮，进行再次反转，将情绪推向顶峰。
-    4. **升华 (The Elevation)**: 结尾的主题升华，留下深刻的思考或情感共鸣。
+    请提供三个版本，每个版本要有不同的侧重点（例如：版本A侧重悬疑反转，版本B侧重情感纠葛，版本C侧重宏大叙事）。
+    不要使用Markdown格式，请直接返回一个JSON数组，包含三个字符串，每个字符串是一个完整的大纲。
 
-    请用Markdown格式输出，条理清晰，引人入胜。
+    JSON Schema:
+    {
+      "type": "array",
+      "items": { "type": "string" }
+    }
   `;
 
   try {
     const response = await ai.models.generateContent({
       model: TEXT_MODEL,
       contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING }
+        }
+      }
     });
-    return response.text || "无法生成大纲，请重试。";
+    const jsonStr = response.text || "[]";
+    return JSON.parse(jsonStr);
   } catch (error) {
-    console.error("Error generating outline:", error);
-    throw error;
+    console.error("Error generating outline options:", error);
+    // Fallback if JSON fails
+    return [`生成失败，请重试。\n错误详情: ${error}`];
   }
+};
+
+// Legacy support for single outline (kept but unused in new flow mostly)
+export const generateOutline = async (apiKey: string, idea: string, genre: Genre): Promise<string> => {
+   const options = await generateOutlineOptions(apiKey, idea, genre);
+   return options[0] || "";
 };
 
 export const analyzeAndRewrite = async (apiKey: string, text: string): Promise<{ idea: string, genre: Genre, outline: string }> => {
   const ai = getClient(apiKey);
   const prompt = `
-    请分析以下提供的文本/剧本内容，提取其核心创意、推测最合适的类型，并根据内容整理出一份标准的故事大纲（包含钩子、反转、高潮、升华）。
+    请分析以下提供的文本/剧本内容，提取其核心创意、推测最合适的类型，并根据内容整理出一份标准的故事大纲。
     
     输入文本：
     ${text.slice(0, 5000)}
@@ -106,7 +124,7 @@ export const extractCharacters = async (apiKey: string, outline: string): Promis
               age: { type: Type.STRING },
               role: { type: Type.STRING },
               personality: { type: Type.STRING },
-              appearance: { type: Type.STRING, description: "Detailed visual description for image generation" },
+              appearance: { type: Type.STRING, description: "Detailed visual description for image generation, including hair, eyes, clothing style." },
             },
             required: ["name", "age", "role", "personality", "appearance"],
           },
@@ -117,7 +135,6 @@ export const extractCharacters = async (apiKey: string, outline: string): Promis
     const jsonStr = response.text || "[]";
     const parsedData = JSON.parse(jsonStr);
     
-    // Add unique IDs
     return parsedData.map((char: any) => ({
       ...char,
       id: crypto.randomUUID(),
@@ -129,62 +146,22 @@ export const extractCharacters = async (apiKey: string, outline: string): Promis
   }
 };
 
-export const planEpisodes = async (apiKey: string, outline: string): Promise<EpisodePlan[]> => {
-  const ai = getClient(apiKey);
-  const prompt = `
-    作为总编剧，请根据以下剧本大纲，规划分集剧情。
-    请根据故事的体量，合理划分集数（通常为 3-12 集）。
-    
-    大纲内容：
-    ${outline}
-    
-    请返回 JSON 格式数组：
-    [
-      { "number": 1, "title": "第一集标题", "summary": "本集主要情节摘要" },
-      ...
-    ]
-  `;
-
-  try {
-    const response = await ai.models.generateContent({
-      model: TEXT_MODEL,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              number: { type: Type.INTEGER },
-              title: { type: Type.STRING },
-              summary: { type: Type.STRING },
-            },
-            required: ["number", "title", "summary"],
-          },
-        },
-      },
-    });
-
-    const jsonStr = response.text || "[]";
-    return JSON.parse(jsonStr);
-  } catch (error) {
-    console.error("Error planning episodes:", error);
-    // Fallback: return at least one episode if parsing fails
-    return [{ number: 1, title: "第一集", summary: "故事开始。" }];
-  }
-};
-
 export const generateCharacterImage = async (apiKey: string, character: Character, genre: Genre): Promise<string> => {
   const ai = getClient(apiKey);
+  // Using explicit instructions for a character sheet/4-grid view
   const prompt = `
-    Character Design Sheet for ${character.name}, a character in a ${genre} story.
-    Role: ${character.role}.
-    Age: ${character.age}.
-    Description: ${character.appearance}.
+    Character Design Sheet for ${character.name}, a ${character.age} year old ${character.role} in a ${genre} story.
     
-    Layout: Split screen. Left side: Three-view diagram (Front, Side, Back) full body reference. Right side: Detailed cinematic close-up portrait.
-    Style: High quality, consistent character design, detailed, professional concept art, anime or semi-realistic style suitable for animation.
+    Please generate a **2x2 Grid Image (4 panels)** containing:
+    1. Top Left: Detailed Close-up Face Portrait.
+    2. Top Right: Full Body Front View.
+    3. Bottom Left: Full Body Side View.
+    4. Bottom Right: Back View or Dynamic Action Pose.
+    
+    Appearance: ${character.appearance}.
+    Personality: ${character.personality}.
+    
+    Style: High quality concept art, cinematic lighting, 8k resolution, detailed texture, clean background.
   `;
 
   try {
@@ -192,11 +169,6 @@ export const generateCharacterImage = async (apiKey: string, character: Characte
       model: IMAGE_MODEL,
       contents: {
         parts: [{ text: prompt }]
-      },
-      config: {
-        imageConfig: {
-          aspectRatio: "4:3",
-        }
       }
     });
 
@@ -212,47 +184,84 @@ export const generateCharacterImage = async (apiKey: string, character: Characte
   }
 };
 
+// New: Plan episodes structure before writing
+export const planEpisodes = async (apiKey: string, outline: string): Promise<EpisodePlan[]> => {
+    const ai = getClient(apiKey);
+    const prompt = `
+      基于以下故事大纲，规划一个短剧/动画的分集大纲（通常为 8-12 集，如果故事较短则相应减少）。
+      
+      大纲：
+      ${outline}
+  
+      请返回 JSON 数组，包含每集的集数、标题和简要剧情摘要（Summary）。
+      确保剧情连贯，有起承转合。
+    `;
+  
+    try {
+      const response = await ai.models.generateContent({
+        model: TEXT_MODEL,
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                  number: { type: Type.INTEGER },
+                  title: { type: Type.STRING },
+                  summary: { type: Type.STRING }
+              },
+              required: ["number", "title", "summary"]
+            }
+          }
+        }
+      });
+      return JSON.parse(response.text || "[]");
+    } catch (error) {
+      console.error("Error planning episodes:", error);
+      throw error;
+    }
+  };
+
 export const generateEpisodeScript = async (
   apiKey: string,
   outline: string, 
   characters: Character[], 
-  episodePlan: EpisodePlan,
+  episodePlan: EpisodePlan, 
   prevContent: string
 ): Promise<string> => {
   const ai = getClient(apiKey);
   const charContext = characters.map(c => `${c.name} (${c.role}): ${c.personality}`).join('\n');
   
   const prompt = `
-    你是一位专业的影视/动画编剧。请撰写 **第 ${episodePlan.number} 集：${episodePlan.title}** 的完整剧本。
+    你是一位专业的影视编剧。请撰写 **第 ${episodePlan.number} 集：${episodePlan.title}** 的完整剧本。
     
-    本集剧情摘要：
+    【总故事大纲】：
+    ${outline.slice(0, 1000)}...
+    
+    【本集摘要】：
     ${episodePlan.summary}
     
-    总体大纲背景：
-    ${outline.slice(0, 500)}...
-
-    人物设定：
+    【人物设定】：
     ${charContext}
     
-    ${prevContent ? `前情提要：\n${prevContent.slice(-300)}...` : ''}
+    【前情提要】：
+    ${prevContent ? prevContent.slice(-800) : '本集为第一集。'}
 
-    【格式严格要求】请参考标准中文剧本格式：
+    【格式严格要求】：
+    请严格遵循以下标准中文影视剧本格式：
+    
+    1. **场景标题**：使用 "场号、地点 时间 内/外" 格式，例如 "**1、李家客厅 日 内**"。请加粗。
+    2. **动作/画面描述**：顶格写，直接描述画面动作或环境，不要加“画面：”前缀。
+    3. **对话**：
+       - **角色名**：“对话内容”
+    4. **特殊标注**：
+       - 内心独白/画外音：使用 **角色名(OS)**：“内容”
+       - 旁白：使用 **旁白**：“内容”
+       - 情绪/动作提示：在对话前的括号内，例如：**小艾**：(不耐烦地)“你到底去不去？”
 
-    1. **场景标题**：格式为 "序号. [内/外]景 [地点] [时间]"。
-       例如：
-       1. 内景 房间 夜晚
-       2. 外景 街道 日
-
-    2. **动作/画面描述**：直接描写看到的画面和动作，不要加括号，不要缩进，作为独立段落。
-       例如：
-       黑暗。冰箱微弱的轰鸣是背景音。一盏灯打开，很快，又关掉。
-
-    3. **对话**：格式为 "人物名：对话内容" 或 "人物名（状态/动作）：对话内容"。
-       例如：
-       杰克（接）：早啊弱壳壳。今天是我的生日。
-       玛（点头）：意志控制身体。
-
-    请直接开始创作剧本内容：
+    请直接输出剧本正文：
   `;
 
   try {

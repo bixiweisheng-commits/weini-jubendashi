@@ -1,3 +1,4 @@
+
 export type Genre = '武侠' | '都市言情' | '穿越' | '科幻' | '悬疑' | '奇幻';
 
 export interface Character {
@@ -20,10 +21,10 @@ export interface EpisodePlan {
 export interface ScriptProject {
   idea: string;
   genre: Genre;
-  outline: string;
+  outline: string; // The selected final outline
   characters: Character[];
-  episodePlan: EpisodePlan[]; // Auto-generated plan
-  episodes: Record<number, string>; // Map episode number to content
+  episodePlan: EpisodePlan[]; // The structure of the episodes
+  episodes: Record<number, string>; // The actual script content
 }
 
 export enum AppStep {

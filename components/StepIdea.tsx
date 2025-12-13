@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Genre, GENRES } from '../types';
 import { Button } from './Button';
@@ -8,7 +9,7 @@ interface StepIdeaProps {
   setIdea: (val: string) => void;
   genre: Genre;
   setGenre: (val: Genre) => void;
-  onNext: () => void;
+  onNext: () => void; // Trigger generation of options
   onAnalyze: (text: string) => void;
   isGenerating: boolean;
 }
@@ -37,7 +38,7 @@ export const StepIdea: React.FC<StepIdeaProps> = ({
         <h2 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-pink-400 via-purple-400 to-indigo-400">
           欢玺剧本大师
         </h2>
-        <p className="text-slate-400 text-lg">从灵感到剧本，AI 助你一臂之力</p>
+        <p className="text-slate-400 text-lg">AI 驱动的剧本创作工作流：创意 → 大纲(多版本) → 角色 → 分集剧本</p>
       </div>
 
       {/* Mode Switcher */}
@@ -136,7 +137,7 @@ export const StepIdea: React.FC<StepIdeaProps> = ({
               className="w-full md:w-auto text-lg px-10 py-3 shadow-xl shadow-indigo-900/20"
               icon={<Sparkles size={20} />}
             >
-              {isGenerating ? '正在构建故事骨架...' : '生成剧本大纲'}
+              {isGenerating ? '正在构思方案...' : '生成 3 个大纲方案'}
             </Button>
           </div>
         </div>
