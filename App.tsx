@@ -1,137 +1,71 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { ScriptProject, AppStep, Genre, Character, EpisodePlan } from './types';
 import { StepIdea } from './components/StepIdea';
 import { StepOutline } from './components/StepOutline';
 import { StepCharacters } from './components/StepCharacters';
 import { StepScript } from './components/StepScript';
-import { generateOutlineOptions, extractCharacters, generateCharacterImage, generateEpisodeScript, analyzeAndRewrite, planEpisodes } from './services/geminiService';
-import { Clapperboard, BookOpen, Users, PenTool, ChevronRight, Settings, Key } from 'lucide-react';
+import { generateOutlineOptions, extractCharacters, generateCharacterImage, generateEpisodeScript, planEpisodes, extendStory, generateScriptBible } from './services/geminiService';
+import { Settings, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from './components/Button';
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export default function App() {
   const [currentStep, setCurrentStep] = useState<AppStep>(AppStep.IDEA);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ current: number, total: number } | null>(null);
   
-  // API Key State with Safe Fallback for Browser Environment
   const [apiKey, setApiKey] = useState<string>(() => {
-    let key = '';
     try {
-      key = localStorage.getItem('gemini_api_key') || '';
+      return localStorage.getItem('gemini_api_key') || '';
     } catch (e) {
-      console.warn('LocalStorage access denied or unavailable');
+      return '';
     }
-
-    if (!key) {
-      try {
-        // Safe access: process might be undefined in pure browser
-        if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
-          key = process.env.API_KEY;
-        }
-      } catch (e) {
-        // ignore error
-      }
-    }
-    return key || '';
   });
 
-  const [tempKey, setTempKey] = useState(apiKey);
-  const [outlineOptions, setOutlineOptions] = useState<string[]>([]);
-
-  // Auto-show modal if no key is present on mount
-  useEffect(() => {
-    if (!apiKey) {
-      setShowApiKeyModal(true);
-    }
-  }, [apiKey]);
-
-  const saveApiKey = () => {
-    try {
-      localStorage.setItem('gemini_api_key', tempKey);
-    } catch (e) {
-      console.warn('Could not save to localStorage');
-    }
-    setApiKey(tempKey);
-    setShowApiKeyModal(false);
-  };
-  
-  // Project State
   const [project, setProject] = useState<ScriptProject>({
     idea: '',
-    genre: '武侠',
+    genre: '霸总虐恋',
     outline: '',
     characters: [],
     episodePlan: [],
-    episodes: {}
+    episodes: {},
+    scriptBible: ''
   });
 
-  // Ensure key is available before calling services
-  const ensureKey = (): boolean => {
-    if (!apiKey) {
-      setShowApiKeyModal(true);
-      return false;
-    }
+  const [outlineOptions, setOutlineOptions] = useState<string[]>([]);
+  const [tempKey, setTempKey] = useState(apiKey);
+
+  const ensureKey = () => {
+    if (!apiKey) { setShowApiKeyModal(true); return false; }
     return true;
-  };
-
-  // --- Handlers ---
-
-  const handleAnalyze = async (text: string) => {
-    if (!ensureKey()) return;
-    setIsGenerating(true);
-    try {
-      const result = await analyzeAndRewrite(apiKey, text);
-      setProject(p => ({ 
-        ...p, 
-        idea: result.idea, 
-        genre: result.genre as Genre, 
-        outline: result.outline 
-      }));
-      setOutlineOptions([]); // Clear options since we have a definite one
-      setCurrentStep(AppStep.OUTLINE);
-    } catch (e) {
-      alert("分析失败，请检查文本内容或API Key。");
-    } finally {
-      setIsGenerating(false);
-    }
   };
 
   const handleGenerateOutlineOptions = async () => {
     if (!ensureKey()) return;
     setIsGenerating(true);
     try {
-      // Clear previous selection
-      setProject(p => ({ ...p, outline: '' }));
       const options = await generateOutlineOptions(apiKey, project.idea, project.genre);
       setOutlineOptions(options);
       setCurrentStep(AppStep.OUTLINE);
     } catch (e) {
-      alert("生成大纲失败，请检查网络或 Key 是否有效。");
+      alert("生成大纲失败，请检查 API Key 或网络");
     } finally {
       setIsGenerating(false);
     }
   };
 
-  const handleRegenerateOptions = async () => {
-      await handleGenerateOutlineOptions();
-  };
-
-  const handleExtractCharacters = async (force: boolean = false) => {
-    // If characters exist and we are not forcing a refresh, just move to next step
-    if (!force && project.characters.length > 0) {
-        setCurrentStep(AppStep.CHARACTERS);
-        return;
-    }
-
+  const handleToCharacters = async () => {
     if (!ensureKey()) return;
     setIsGenerating(true);
     try {
-      const characters = await extractCharacters(apiKey, project.outline);
-      setProject(p => ({ ...p, characters }));
+      const chars = await extractCharacters(apiKey, project.outline);
+      setProject(p => ({ ...p, characters: chars }));
       setCurrentStep(AppStep.CHARACTERS);
     } catch (e) {
-      alert("提取角色失败。");
+      alert("解析角色失败");
     } finally {
       setIsGenerating(false);
     }
@@ -142,7 +76,6 @@ export default function App() {
     const char = project.characters.find(c => c.id === charId);
     if (!char) return;
 
-    // Set loading state for specific character
     setProject(p => ({
       ...p,
       characters: p.characters.map(c => c.id === charId ? { ...c, imageLoading: true } : c)
@@ -155,53 +88,35 @@ export default function App() {
         characters: p.characters.map(c => c.id === charId ? { ...c, imageUrl, imageLoading: false } : c)
       }));
     } catch (e) {
+      alert("生成图片失败");
       setProject(p => ({
         ...p,
         characters: p.characters.map(c => c.id === charId ? { ...c, imageLoading: false } : c)
       }));
-      alert(`无法为 ${char.name} 生成图片`);
     }
   };
 
-  const handlePlanEpisodes = async () => {
+  const handlePlanEpisodes = async (count: number) => {
     if (!ensureKey()) return;
     setIsGenerating(true);
     try {
-        const plan = await planEpisodes(apiKey, project.outline);
+        const plan = await planEpisodes(apiKey, project.outline, count);
         setProject(p => ({ ...p, episodePlan: plan }));
     } catch (e) {
-        alert("分集规划失败，请重试");
+        alert("规划集数失败");
     } finally {
         setIsGenerating(false);
     }
   };
 
-  const handleToScriptStep = async () => {
-      setCurrentStep(AppStep.SCRIPT);
-      // Auto trigger planning if empty
-      if (project.episodePlan.length === 0) {
-          // We can do it here or let the user click the button in StepScript.
-          // Let's let the user click to give them control, 
-          // but StepScript shows a big prompt.
-      }
-  };
-
-  const handleGenerateEpisode = async (episodeNum: number) => {
+  const handleGenerateBible = async () => {
     if (!ensureKey()) return;
-    const plan = project.episodePlan.find(p => p.number === episodeNum);
-    if (!plan) return;
-
     setIsGenerating(true);
     try {
-      // Get context from previous episode if available
-      const prevContent = project.episodes[episodeNum - 1] || "";
-      const content = await generateEpisodeScript(apiKey, project.outline, project.characters, plan, prevContent);
-      setProject(p => ({
-        ...p,
-        episodes: { ...p.episodes, [episodeNum]: content }
-      }));
+      const bible = await generateScriptBible(apiKey, project.outline, project.characters);
+      setProject(p => ({ ...p, scriptBible: bible }));
     } catch (e) {
-      alert("生成剧本失败");
+      alert("生成总纲失败");
     } finally {
       setIsGenerating(false);
     }
@@ -209,298 +124,185 @@ export default function App() {
 
   const handleBatchGenerate = async () => {
     if (!ensureKey()) return;
-    setIsGenerating(true);
+    if (batchProgress) return; 
+
+    const pending = project.episodePlan.filter(p => !project.episodes[p.number]);
+    if (pending.length === 0) {
+        alert("所有集数已完成！");
+        return;
+    }
+
+    setBatchProgress({ current: 0, total: pending.length });
     
     try {
-      // Loop through plan
       let currentEpisodes = { ...project.episodes };
-      for (const plan of project.episodePlan) {
-        // Skip if already exists? Or overwrite? Let's skip existing to save tokens unless user clears it.
-        if (currentEpisodes[plan.number]) continue;
+      let processedCount = 0;
 
-        const prevContent = currentEpisodes[plan.number - 1] || "";
-        const content = await generateEpisodeScript(apiKey, project.outline, project.characters, plan, prevContent);
-        
-        // Update state progressively so user sees progress? 
-        // In React batching might hide it, but we can try setting state each time.
-        currentEpisodes[plan.number] = content;
-        setProject(p => ({
-          ...p,
-          episodes: { ...p.episodes, [plan.number]: content }
-        }));
+      for (const plan of pending) {
+          let success = false;
+          let retryCount = 0;
+          const maxRetries = 2;
+
+          while (!success && retryCount <= maxRetries) {
+              try {
+                  const prevContent = currentEpisodes[plan.number - 1] || "";
+                  const content = await generateEpisodeScript(apiKey, project.outline, project.characters, plan, prevContent);
+                  
+                  currentEpisodes = { ...currentEpisodes, [plan.number]: content };
+                  setProject(p => ({ ...p, episodes: { ...currentEpisodes } }));
+                  success = true;
+              } catch (e: any) {
+                  console.warn(`第 ${plan.number} 集生成尝试 ${retryCount + 1} 失败`, e);
+                  retryCount++;
+                  if (retryCount <= maxRetries) {
+                      await sleep(3000 * retryCount); // Increased backoff
+                  }
+              }
+          }
+
+          if (!success) {
+              const shouldContinue = window.confirm(`第 ${plan.number} 集生成连续多次失败（可能是网络或安全过滤），是否跳过本集并继续生成剩下的集数？`);
+              if (!shouldContinue) {
+                  break; 
+              }
+          } else {
+              await sleep(1000); // Respect API limits
+          }
+
+          processedCount++;
+          setBatchProgress({ current: processedCount, total: pending.length });
       }
-    } catch (e) {
-      alert("一键生成过程中断，请重试");
+    } catch (err) {
+      console.error("Batch generation fatal error:", err);
+      alert("批量生成过程发生错误，您可以再次点击「继续完成未生成集数」");
     } finally {
-      setIsGenerating(false);
+      setBatchProgress(null);
     }
   };
 
-  const handleExportFull = () => {
-    let content = `# ${project.idea}\n\n`;
-    content += `## 剧本大纲\n${project.outline}\n\n`;
-    content += `## 人物小传\n`;
-    project.characters.forEach(c => {
-      content += `### ${c.name} (${c.role}, ${c.age})\n${c.personality}\n${c.appearance}\n\n`;
-    });
-    content += `## 分集剧本\n\n`;
-    
-    project.episodePlan.forEach(ep => {
-      content += `### 第 ${ep.number} 集：${ep.title}\n`;
-      content += `摘要：${ep.summary}\n\n`;
-      content += `${project.episodes[ep.number] || "(暂无内容)"}\n\n`;
-      content += `---\n\n`;
-    });
-
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `全剧本_${new Date().toISOString().slice(0,10)}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleExportFullWord = () => {
-    // Generate simple HTML compatible with Word
-    let content = `
-      <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
-      <head><meta charset='utf-8'><title>${project.idea}</title></head>
-      <body>
-      <h1>${project.idea}</h1>
-      <h2>剧本大纲</h2>
-      <p>${project.outline.replace(/\n/g, '<br/>')}</p>
-      <hr/>
-      <h2>人物小传</h2>
-    `;
-    
-    project.characters.forEach(c => {
-      content += `<h3>${c.name} (${c.role}, ${c.age})</h3>`;
-      content += `<p><strong>性格：</strong>${c.personality}</p>`;
-      content += `<p><strong>外貌：</strong>${c.appearance}</p>`;
-      if (c.imageUrl) {
-         content += `<img src="${c.imageUrl}" width="300" />`;
+  const handleExtendStory = async () => {
+      if (!ensureKey()) return;
+      setIsGenerating(true);
+      try {
+          const last = project.episodePlan[project.episodePlan.length - 1];
+          const next = await extendStory(apiKey, project.outline, project.characters, last);
+          setProject(p => ({ ...p, episodePlan: [...p.episodePlan, next] }));
+      } catch (e) {
+          alert("扩展失败");
+      } finally {
+          setIsGenerating(false);
       }
-      content += `<br/>`;
-    });
-
-    content += `<hr/><h2>分集剧本</h2>`;
-    
-    project.episodePlan.forEach(ep => {
-      content += `<h3>第 ${ep.number} 集：${ep.title}</h3>`;
-      content += `<p><strong>摘要：</strong>${ep.summary}</p>`;
-      const scriptText = project.episodes[ep.number] || "(暂无内容)";
-      content += `<div>${scriptText.replace(/\n/g, '<br/>')}</div>`;
-      content += `<br/><hr/><br/>`;
-    });
-
-    content += `</body></html>`;
-
-    const blob = new Blob([content], { type: 'application/msword' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `全剧本_${new Date().toISOString().slice(0,10)}.doc`;
-    a.click();
-    URL.revokeObjectURL(url);
   };
 
-  const handleExportSingleEpisode = (epNum: number) => {
-    const content = project.episodes[epNum];
-    if (!content) return;
-    
-    const plan = project.episodePlan.find(p => p.number === epNum);
-    const title = plan ? `第${plan.number}集_${plan.title}` : `第${epNum}集`;
-    
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${title}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const handleGenerateEpisode = async (num: number) => {
+      if (!ensureKey()) return;
+      setIsGenerating(true);
+      try {
+          const plan = project.episodePlan.find(p => p.number === num);
+          if (!plan) return;
+          const prev = project.episodes[num-1] || "";
+          // Fixed the typo: using 'prev' instead of 'prevContent'
+          const content = await generateEpisodeScript(apiKey, project.outline, project.characters, plan, prev);
+          setProject(p => ({ ...p, episodes: { ...project.episodes, [num]: content } }));
+      } catch (e) {
+          console.error(e);
+          alert("编写失败，请检查网络或稍后再试");
+      } finally {
+          setIsGenerating(false);
+      }
   };
 
-  const handleExportSingleEpisodeWord = (epNum: number) => {
-     const scriptContent = project.episodes[epNum];
-     if (!scriptContent) return;
-
-     const plan = project.episodePlan.find(p => p.number === epNum);
-     const title = plan ? `第${plan.number}集 ${plan.title}` : `第${epNum}集`;
-
-     const content = `
-        <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
-        <head><meta charset='utf-8'><title>${title}</title></head>
-        <body>
-        <h1>${title}</h1>
-        <p><strong>摘要：</strong>${plan?.summary || ''}</p>
-        <hr/>
-        <div>${scriptContent.replace(/\n/g, '<br/>')}</div>
-        </body></html>
-     `;
-
-     const blob = new Blob([content], { type: 'application/msword' });
-     const url = URL.createObjectURL(blob);
-     const a = document.createElement('a');
-     a.href = url;
-     a.download = `${title}.doc`;
-     a.click();
-     URL.revokeObjectURL(url);
+  const handleGoBack = () => {
+      if (currentStep > 0) setCurrentStep(currentStep - 1);
   };
 
-  const handleUpdatePlan = (newPlan: EpisodePlan[]) => {
-      setProject(p => ({ ...p, episodePlan: newPlan }));
+  const handleGoForward = () => {
+      if (currentStep < 3) setCurrentStep(currentStep + 1);
   };
-
-  const steps = [
-    { id: AppStep.IDEA, title: '创意/导入', icon: <Clapperboard size={18} /> },
-    { id: AppStep.OUTLINE, title: '故事大纲', icon: <BookOpen size={18} /> },
-    { id: AppStep.CHARACTERS, title: '角色设计', icon: <Users size={18} /> },
-    { id: AppStep.SCRIPT, title: '分集剧本', icon: <PenTool size={18} /> },
-  ];
 
   return (
-    <div className="h-full flex flex-col bg-slate-950 text-slate-200 font-sans selection:bg-indigo-500 selection:text-white">
-      {/* Header / Nav */}
+    <div className="h-full flex flex-col bg-slate-950 text-slate-200">
       <header className="h-16 border-b border-slate-800 bg-slate-900/80 backdrop-blur-md flex items-center justify-between px-6 shrink-0 z-20">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-xl flex items-center justify-center text-white font-bold shadow-lg shadow-indigo-900/20">
-            欢
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-orange-600 rounded-xl flex items-center justify-center text-white font-bold">欢</div>
+            <h1 className="font-bold text-lg hidden md:block">欢玺剧本大师 Pro</h1>
           </div>
-          <h1 className="font-bold text-lg tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
-            欢玺剧本大师
-          </h1>
-        </div>
-
-        {/* Stepper */}
-        <div className="hidden lg:flex items-center gap-2 bg-slate-950/50 p-1.5 rounded-full border border-slate-800/60 shadow-inner">
-          {steps.map((step, idx) => {
-            const isActive = currentStep === step.id;
-            const isCompleted = currentStep > step.id;
-            
-            return (
-              <div key={step.id} className="flex items-center">
-                <button
-                  onClick={() => isCompleted && setCurrentStep(step.id)}
-                  disabled={!isCompleted && !isActive}
-                  className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-300 ${
-                    isActive 
-                      ? 'bg-indigo-600 text-white shadow-md' 
-                      : isCompleted 
-                        ? 'text-slate-300 hover:text-white hover:bg-slate-800' 
-                        : 'text-slate-600 cursor-not-allowed'
-                  }`}
-                >
-                  {step.icon}
-                  <span>{step.title}</span>
-                </button>
-                {idx < steps.length - 1 && (
-                  <ChevronRight size={14} className="text-slate-700 mx-1" />
-                )}
+          
+          <nav className="flex items-center bg-slate-800/50 rounded-lg p-1 border border-slate-700">
+              <button 
+                onClick={handleGoBack} 
+                disabled={currentStep === AppStep.IDEA}
+                className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400"
+              >
+                  <ChevronLeft size={20} />
+              </button>
+              <div className="px-4 text-xs font-bold text-orange-400 uppercase tracking-widest">
+                  Step {currentStep + 1}
               </div>
-            );
-          })}
+              <button 
+                onClick={handleGoForward}
+                disabled={currentStep === AppStep.SCRIPT || (currentStep === AppStep.IDEA && !project.idea) || (currentStep === AppStep.OUTLINE && !project.outline)}
+                className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400"
+              >
+                  <ChevronRight size={20} />
+              </button>
+          </nav>
         </div>
 
         <div className="flex items-center gap-4">
-           {!apiKey && <span className="text-xs text-amber-500 animate-pulse hidden md:block">⚠️ 请配置 API Key</span>}
-           <button 
-             onClick={() => setShowApiKeyModal(true)}
-             className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-full transition-colors"
-             title="API Key 设置"
-           >
-             <Settings size={20} />
+           <button onClick={() => setShowApiKeyModal(true)} className="p-2 text-slate-400 hover:text-white transition-colors bg-slate-800 rounded-lg">
+                <Settings size={20} />
            </button>
         </div>
       </header>
 
-      {/* Main Content Area */}
       <main className="flex-1 overflow-hidden relative">
-         <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-5 pointer-events-none"></div>
-         <div className="absolute inset-0 bg-gradient-to-b from-indigo-900/10 to-transparent pointer-events-none"></div>
-
-        <div className="h-full w-full p-6 overflow-y-auto custom-scrollbar relative z-10">
+        <div className="h-full w-full p-6 overflow-y-auto custom-scrollbar">
           {currentStep === AppStep.IDEA && (
-            <div className="h-full flex flex-col justify-center">
-                <StepIdea
-                idea={project.idea}
-                setIdea={(val) => setProject(p => ({ ...p, idea: val }))}
-                genre={project.genre}
-                setGenre={(val) => setProject(p => ({ ...p, genre: val }))}
-                onNext={handleGenerateOutlineOptions}
-                onAnalyze={handleAnalyze}
-                isGenerating={isGenerating}
-                />
-            </div>
+            <StepIdea idea={project.idea} setIdea={(v) => setProject(p => ({...p, idea: v}))} genre={project.genre} setGenre={(v) => setProject(p => ({...p, genre: v}))} onNext={handleGenerateOutlineOptions} onAnalyze={() => {}} isGenerating={isGenerating} />
           )}
-
           {currentStep === AppStep.OUTLINE && (
-            <StepOutline
-              outline={project.outline}
-              options={outlineOptions}
-              setOutline={(val) => setProject(p => ({ ...p, outline: val }))}
-              onNext={handleExtractCharacters}
-              onRegenerate={handleRegenerateOptions}
-              isGenerating={isGenerating}
-              hasCharacters={project.characters.length > 0}
-            />
+            <StepOutline outline={project.outline} options={outlineOptions} setOutline={(v) => setProject(p => ({...p, outline: v}))} onNext={handleToCharacters} onRegenerate={handleGenerateOutlineOptions} isGenerating={isGenerating} hasCharacters={project.characters.length > 0} />
           )}
-
           {currentStep === AppStep.CHARACTERS && (
-            <StepCharacters
-              characters={project.characters}
-              genre={project.genre}
-              updateCharacter={(id, updates) => setProject(p => ({
-                ...p,
-                characters: p.characters.map(c => c.id === id ? { ...c, ...updates } : c)
-              }))}
-              generateImage={handleGenerateCharacterImage}
-              onNext={handleToScriptStep}
-            />
+            <StepCharacters characters={project.characters} genre={project.genre} updateCharacter={(id, up) => setProject(p => ({...p, characters: p.characters.map(c => c.id === id ? {...c, ...up} : c)}))} generateImage={handleGenerateCharacterImage} onNext={() => setCurrentStep(AppStep.SCRIPT)} />
           )}
-
           {currentStep === AppStep.SCRIPT && (
-            <StepScript
-              episodePlan={project.episodePlan}
-              episodes={project.episodes}
-              setEpisodeContent={(num, content) => setProject(p => ({
-                ...p,
-                episodes: { ...p.episodes, [num]: content }
-              }))}
-              generateEpisode={handleGenerateEpisode}
-              isGenerating={isGenerating}
-              onAutoPlan={handlePlanEpisodes}
-              onBatchGenerate={handleBatchGenerate}
-              onExport={handleExportFull}
-              onExportWord={handleExportFullWord}
-              onExportEpisode={handleExportSingleEpisode}
-              onExportEpisodeWord={handleExportSingleEpisodeWord}
-              onUpdatePlan={handleUpdatePlan}
+            <StepScript 
+                episodePlan={project.episodePlan} 
+                episodes={project.episodes} 
+                scriptBible={project.scriptBible}
+                setEpisodeContent={(n, c) => setProject(p => ({...p, episodes: {...p.episodes, [n]: c}}))} 
+                generateEpisode={handleGenerateEpisode} 
+                generateBible={handleGenerateBible}
+                isGenerating={isGenerating} 
+                onAutoPlan={handlePlanEpisodes} 
+                onResetPlan={() => setProject(p => ({...p, episodePlan: [], episodes: {}, scriptBible: ''}))}
+                onBatchGenerate={handleBatchGenerate} 
+                onExtend={handleExtendStory} 
+                onUpdatePlan={(pl) => setProject(p => ({...p, episodePlan: pl}))} 
+                batchProgress={batchProgress}
             />
           )}
         </div>
       </main>
 
-      {/* API Key Modal */}
       {showApiKeyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md shadow-2xl scale-100">
-            <h3 className="text-xl font-bold text-white mb-2 flex items-center gap-2">
-              <Key size={20} className="text-indigo-400"/> 设置 API Key
-            </h3>
-            <p className="text-slate-400 text-sm mb-4">
-              为了使用 Google Gemini 模型，请输入您的 API Key。Key 将安全存储在您的本地浏览器中。
-            </p>
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-8 w-full max-w-md shadow-2xl">
+            <h3 className="text-xl font-bold mb-2">设置 API Key</h3>
+            <p className="text-slate-400 text-sm mb-6">请输入您的 Google Gemini API Key 以启用 AI 功能。</p>
             <input 
-              type="password"
-              value={tempKey}
-              onChange={(e) => setTempKey(e.target.value)}
-              placeholder="AIzaSy..."
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-white outline-none focus:border-indigo-500 mb-6 font-mono"
+                type="password" 
+                placeholder="AI-..."
+                value={tempKey} 
+                onChange={(e) => setTempKey(e.target.value)} 
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-white mb-6 focus:border-orange-500 outline-none" 
             />
             <div className="flex justify-end gap-3">
               <Button variant="ghost" onClick={() => setShowApiKeyModal(false)}>取消</Button>
-              <Button onClick={saveApiKey}>保存配置</Button>
+              <Button onClick={() => { localStorage.setItem('gemini_api_key', tempKey); setApiKey(tempKey); setShowApiKeyModal(false); }} className="bg-orange-600">保存并启用</Button>
             </div>
           </div>
         </div>

@@ -1,5 +1,5 @@
 
-export type Genre = '武侠' | '都市言情' | '穿越' | '科幻' | '悬疑' | '奇幻';
+export type Genre = string;
 
 export interface Character {
   id: string;
@@ -21,10 +21,11 @@ export interface EpisodePlan {
 export interface ScriptProject {
   idea: string;
   genre: Genre;
-  outline: string; // The selected final outline
+  outline: string; 
   characters: Character[];
-  episodePlan: EpisodePlan[]; // The structure of the episodes
-  episodes: Record<number, string>; // The actual script content
+  episodePlan: EpisodePlan[]; 
+  episodes: Record<number, string>; 
+  scriptBible?: string; // Total outline, characters, scenes, etc.
 }
 
 export enum AppStep {
@@ -34,4 +35,7 @@ export enum AppStep {
   SCRIPT = 3,
 }
 
-export const GENRES: Genre[] = ['武侠', '都市言情', '穿越', '科幻', '悬疑', '奇幻'];
+export const PRESET_GENRES = [
+  '霸总虐恋', '大女主复仇', '吸血鬼传说', '狼人觉醒', '战神归来', 
+  '重生逆袭', '都市言情', '科幻惊悚', '悬疑反转', '修仙奇幻'
+];
