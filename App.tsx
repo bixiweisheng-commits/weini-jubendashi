@@ -1,12 +1,13 @@
 
 import React, { useState } from 'react';
-import { ScriptProject, AppStep, Genre, Character, EpisodePlan } from './types';
+import { ScriptProject, AppStep, Genre, Character, EpisodePlan, Scene } from './types';
 import { StepIdea } from './components/StepIdea';
 import { StepOutline } from './components/StepOutline';
 import { StepCharacters } from './components/StepCharacters';
 import { StepScript } from './components/StepScript';
-import { generateOutlineOptions, extractCharacters, generateCharacterImage, generateEpisodeScript, planEpisodes, extendStory, generateScriptBible } from './services/geminiService';
-import { Settings, ChevronLeft, ChevronRight } from 'lucide-react';
+import { generateOutlineOptions, extractAllCharactersFromScript, extractScenesFromScript, generateCharacterImage, generateEpisodeScript, planEpisodes, extendStory, generateScriptBible } from './services/geminiService';
+// Fixed missing imports: Zap, Layers; removed unused Settings and navigation icons
+import { Map, Sparkles, Layout, Zap, Layers } from 'lucide-react';
 import { Button } from './components/Button';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -14,65 +15,57 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 export default function App() {
   const [currentStep, setCurrentStep] = useState<AppStep>(AppStep.IDEA);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ current: number, total: number } | null>(null);
   
-  const [apiKey, setApiKey] = useState<string>(() => {
-    try {
-      return localStorage.getItem('gemini_api_key') || '';
-    } catch (e) {
-      return '';
-    }
-  });
-
+  // Removed apiKey and tempKey states as API key is now handled exclusively via process.env.API_KEY
   const [project, setProject] = useState<ScriptProject>({
     idea: '',
     genre: '霸总虐恋',
     outline: '',
     characters: [],
+    scenes: [],
     episodePlan: [],
     episodes: {},
     scriptBible: ''
   });
 
   const [outlineOptions, setOutlineOptions] = useState<string[]>([]);
-  const [tempKey, setTempKey] = useState(apiKey);
 
-  const ensureKey = () => {
-    if (!apiKey) { setShowApiKeyModal(true); return false; }
-    return true;
-  };
-
+  // Removed ensureKey checks as API key availability is a hard requirement handled externally
   const handleGenerateOutlineOptions = async () => {
-    if (!ensureKey()) return;
     setIsGenerating(true);
     try {
-      const options = await generateOutlineOptions(apiKey, project.idea, project.genre);
+      const options = await generateOutlineOptions(project.idea, project.genre);
       setOutlineOptions(options);
       setCurrentStep(AppStep.OUTLINE);
     } catch (e) {
-      alert("生成大纲失败，请检查 API Key 或网络");
+      alert("生成大纲失败");
     } finally {
       setIsGenerating(false);
     }
   };
 
-  const handleToCharacters = async () => {
-    if (!ensureKey()) return;
+  const handleProductionExtract = async () => {
+    const allText = Object.values(project.episodes).join('\n');
+    if (!allText) return alert("请先生成一部分剧本，以便 AI 提取角色和场景");
+    
     setIsGenerating(true);
     try {
-      const chars = await extractCharacters(apiKey, project.outline);
-      setProject(p => ({ ...p, characters: chars }));
+      const [chars, scenes] = await Promise.all([
+          extractAllCharactersFromScript(allText),
+          extractScenesFromScript(allText)
+      ]);
+      setProject(p => ({ ...p, characters: chars, scenes: scenes }));
       setCurrentStep(AppStep.CHARACTERS);
     } catch (e) {
-      alert("解析角色失败");
+      console.error(e);
+      alert("提取资产失败，请检查网络");
     } finally {
       setIsGenerating(false);
     }
   };
 
   const handleGenerateCharacterImage = async (charId: string) => {
-    if (!ensureKey()) return;
     const char = project.characters.find(c => c.id === charId);
     if (!char) return;
 
@@ -82,7 +75,7 @@ export default function App() {
     }));
 
     try {
-      const imageUrl = await generateCharacterImage(apiKey, char, project.genre);
+      const imageUrl = await generateCharacterImage(char, project.genre);
       setProject(p => ({
         ...p,
         characters: p.characters.map(c => c.id === charId ? { ...c, imageUrl, imageLoading: false } : c)
@@ -97,40 +90,34 @@ export default function App() {
   };
 
   const handlePlanEpisodes = async (count: number) => {
-    if (!ensureKey()) return;
     setIsGenerating(true);
     try {
-        const plan = await planEpisodes(apiKey, project.outline, count);
+        const plan = await planEpisodes(project.outline, count);
         setProject(p => ({ ...p, episodePlan: plan }));
     } catch (e) {
-        alert("规划集数失败");
+        alert("规划失败");
     } finally {
         setIsGenerating(false);
     }
   };
 
   const handleGenerateBible = async () => {
-    if (!ensureKey()) return;
     setIsGenerating(true);
     try {
-      const bible = await generateScriptBible(apiKey, project.outline, project.characters);
+      const bible = await generateScriptBible(project.outline, project.characters, project.scenes);
       setProject(p => ({ ...p, scriptBible: bible }));
     } catch (e) {
-      alert("生成总纲失败");
+      alert("生成失败");
     } finally {
       setIsGenerating(false);
     }
   };
 
   const handleBatchGenerate = async () => {
-    if (!ensureKey()) return;
     if (batchProgress) return; 
 
     const pending = project.episodePlan.filter(p => !project.episodes[p.number]);
-    if (pending.length === 0) {
-        alert("所有集数已完成！");
-        return;
-    }
+    if (pending.length === 0) return alert("全部已完成");
 
     setBatchProgress({ current: 0, total: pending.length });
     
@@ -146,47 +133,39 @@ export default function App() {
           while (!success && retryCount <= maxRetries) {
               try {
                   const prevContent = currentEpisodes[plan.number - 1] || "";
-                  const content = await generateEpisodeScript(apiKey, project.outline, project.characters, plan, prevContent);
-                  
+                  const content = await generateEpisodeScript(project.outline, project.characters, plan, prevContent);
                   currentEpisodes = { ...currentEpisodes, [plan.number]: content };
                   setProject(p => ({ ...p, episodes: { ...currentEpisodes } }));
                   success = true;
               } catch (e: any) {
-                  console.warn(`第 ${plan.number} 集生成尝试 ${retryCount + 1} 失败`, e);
                   retryCount++;
-                  if (retryCount <= maxRetries) {
-                      await sleep(3000 * retryCount); // Increased backoff
-                  }
+                  if (retryCount <= maxRetries) await sleep(4000 * retryCount);
               }
           }
 
           if (!success) {
-              const shouldContinue = window.confirm(`第 ${plan.number} 集生成连续多次失败（可能是网络或安全过滤），是否跳过本集并继续生成剩下的集数？`);
-              if (!shouldContinue) {
+              if (!window.confirm(`第 ${plan.number} 集生成失败。是否跳过本集并继续生成剩余 ${pending.length - processedCount - 1} 集？`)) {
                   break; 
               }
           } else {
-              await sleep(1000); // Respect API limits
+              await sleep(1200);
           }
-
           processedCount++;
           setBatchProgress({ current: processedCount, total: pending.length });
       }
     } catch (err) {
-      console.error("Batch generation fatal error:", err);
-      alert("批量生成过程发生错误，您可以再次点击「继续完成未生成集数」");
+      alert("批量生成中断，您可以点击继续按钮恢复");
     } finally {
       setBatchProgress(null);
     }
   };
 
-  const handleExtendStory = async () => {
-      if (!ensureKey()) return;
+  const handleExtendStory = async (count: number) => {
       setIsGenerating(true);
       try {
           const last = project.episodePlan[project.episodePlan.length - 1];
-          const next = await extendStory(apiKey, project.outline, project.characters, last);
-          setProject(p => ({ ...p, episodePlan: [...p.episodePlan, next] }));
+          const newEps = await extendStory(project.outline, last, count);
+          setProject(p => ({ ...p, episodePlan: [...p.episodePlan, ...newEps] }));
       } catch (e) {
           alert("扩展失败");
       } finally {
@@ -195,78 +174,74 @@ export default function App() {
   };
 
   const handleGenerateEpisode = async (num: number) => {
-      if (!ensureKey()) return;
       setIsGenerating(true);
       try {
           const plan = project.episodePlan.find(p => p.number === num);
           if (!plan) return;
           const prev = project.episodes[num-1] || "";
-          // Fixed the typo: using 'prev' instead of 'prevContent'
-          const content = await generateEpisodeScript(apiKey, project.outline, project.characters, plan, prev);
+          const content = await generateEpisodeScript(project.outline, project.characters, plan, prev);
           setProject(p => ({ ...p, episodes: { ...project.episodes, [num]: content } }));
       } catch (e) {
-          console.error(e);
-          alert("编写失败，请检查网络或稍后再试");
+          alert("生成失败，请重试");
       } finally {
           setIsGenerating(false);
       }
   };
 
-  const handleGoBack = () => {
-      if (currentStep > 0) setCurrentStep(currentStep - 1);
-  };
-
-  const handleGoForward = () => {
-      if (currentStep < 3) setCurrentStep(currentStep + 1);
-  };
+  const stages = [
+      { id: AppStep.IDEA, label: '构思', icon: <Sparkles size={14}/> },
+      { id: AppStep.OUTLINE, label: '大纲', icon: <Layout size={14}/> },
+      { id: AppStep.SCRIPT, label: '创作', icon: <Zap size={14}/> },
+      { id: AppStep.CHARACTERS, label: '资产', icon: <Layers size={14}/> },
+  ];
 
   return (
-    <div className="h-full flex flex-col bg-slate-950 text-slate-200">
-      <header className="h-16 border-b border-slate-800 bg-slate-900/80 backdrop-blur-md flex items-center justify-between px-6 shrink-0 z-20">
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-orange-600 rounded-xl flex items-center justify-center text-white font-bold">欢</div>
-            <h1 className="font-bold text-lg hidden md:block">欢玺剧本大师 Pro</h1>
+    <div className="h-full flex flex-col font-sans">
+      <header className="h-16 border-b border-white/5 bg-slate-950/40 backdrop-blur-xl flex items-center justify-between px-8 shrink-0 z-50">
+        <div className="flex items-center gap-12">
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 bg-amber-600 rounded-2xl flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-amber-900/40 border border-amber-400/20">欢</div>
+            <div className="hidden md:block">
+                <h1 className="font-black text-lg text-white leading-none tracking-tighter uppercase italic">欢玺 <span className="text-amber-500">PRO</span></h1>
+                <p className="text-[10px] text-slate-500 font-bold tracking-widest uppercase mt-0.5">Production Suite</p>
+            </div>
           </div>
           
-          <nav className="flex items-center bg-slate-800/50 rounded-lg p-1 border border-slate-700">
-              <button 
-                onClick={handleGoBack} 
-                disabled={currentStep === AppStep.IDEA}
-                className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400"
-              >
-                  <ChevronLeft size={20} />
-              </button>
-              <div className="px-4 text-xs font-bold text-orange-400 uppercase tracking-widest">
-                  Step {currentStep + 1}
-              </div>
-              <button 
-                onClick={handleGoForward}
-                disabled={currentStep === AppStep.SCRIPT || (currentStep === AppStep.IDEA && !project.idea) || (currentStep === AppStep.OUTLINE && !project.outline)}
-                className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400"
-              >
-                  <ChevronRight size={20} />
-              </button>
+          <nav className="hidden lg:flex items-center gap-1.5 p-1 bg-white/5 border border-white/5 rounded-2xl">
+              {stages.map((stage) => (
+                  <button
+                    key={stage.id}
+                    onClick={() => {
+                        const canNavigate = (stage.id <= currentStep) || (stage.id === AppStep.OUTLINE && project.idea) || (stage.id === AppStep.SCRIPT && project.outline);
+                        if (canNavigate) setCurrentStep(stage.id);
+                    }}
+                    className={`flex items-center gap-2 px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${currentStep === stage.id ? 'bg-amber-600 text-white shadow-lg shadow-amber-900/30' : 'text-slate-500 hover:text-slate-300'}`}
+                  >
+                      {stage.icon}
+                      {stage.label}
+                  </button>
+              ))}
           </nav>
         </div>
 
         <div className="flex items-center gap-4">
-           <button onClick={() => setShowApiKeyModal(true)} className="p-2 text-slate-400 hover:text-white transition-colors bg-slate-800 rounded-lg">
-                <Settings size={20} />
-           </button>
+            {currentStep === AppStep.SCRIPT && (
+                <Button variant="amber" size="sm" onClick={handleProductionExtract} isLoading={isGenerating} icon={<Layers size={16} />} className="shadow-none">
+                    生成制作资产
+                </Button>
+            )}
+            <div className="h-8 w-px bg-white/5 mx-2" />
+            {/* Removed Settings button to comply with no-UI-for-API-key guideline */}
         </div>
       </header>
 
       <main className="flex-1 overflow-hidden relative">
-        <div className="h-full w-full p-6 overflow-y-auto custom-scrollbar">
+        <div className="h-full w-full p-8 overflow-y-auto custom-scrollbar">
           {currentStep === AppStep.IDEA && (
             <StepIdea idea={project.idea} setIdea={(v) => setProject(p => ({...p, idea: v}))} genre={project.genre} setGenre={(v) => setProject(p => ({...p, genre: v}))} onNext={handleGenerateOutlineOptions} onAnalyze={() => {}} isGenerating={isGenerating} />
           )}
           {currentStep === AppStep.OUTLINE && (
-            <StepOutline outline={project.outline} options={outlineOptions} setOutline={(v) => setProject(p => ({...p, outline: v}))} onNext={handleToCharacters} onRegenerate={handleGenerateOutlineOptions} isGenerating={isGenerating} hasCharacters={project.characters.length > 0} />
-          )}
-          {currentStep === AppStep.CHARACTERS && (
-            <StepCharacters characters={project.characters} genre={project.genre} updateCharacter={(id, up) => setProject(p => ({...p, characters: p.characters.map(c => c.id === id ? {...c, ...up} : c)}))} generateImage={handleGenerateCharacterImage} onNext={() => setCurrentStep(AppStep.SCRIPT)} />
+            <StepOutline outline={project.outline} options={outlineOptions} setOutline={(v) => setProject(p => ({...p, outline: v}))} onNext={() => setCurrentStep(AppStep.SCRIPT)} onRegenerate={handleGenerateOutlineOptions} isGenerating={isGenerating} />
           )}
           {currentStep === AppStep.SCRIPT && (
             <StepScript 
@@ -278,35 +253,27 @@ export default function App() {
                 generateBible={handleGenerateBible}
                 isGenerating={isGenerating} 
                 onAutoPlan={handlePlanEpisodes} 
-                onResetPlan={() => setProject(p => ({...p, episodePlan: [], episodes: {}, scriptBible: ''}))}
+                onResetPlan={() => { if(window.confirm("确定要重设所有分集吗？已生成的剧本将丢失。")) setProject(p => ({...p, episodePlan: [], episodes: {}, scriptBible: ''})); }}
                 onBatchGenerate={handleBatchGenerate} 
                 onExtend={handleExtendStory} 
                 onUpdatePlan={(pl) => setProject(p => ({...p, episodePlan: pl}))} 
                 batchProgress={batchProgress}
             />
           )}
+          {currentStep === AppStep.CHARACTERS && (
+            <StepCharacters 
+                characters={project.characters} 
+                scenes={project.scenes}
+                genre={project.genre} 
+                updateCharacter={(id, up) => setProject(p => ({...p, characters: p.characters.map(c => c.id === id ? {...c, ...up} : c)}))} 
+                generateImage={handleGenerateCharacterImage} 
+                onNext={() => setCurrentStep(AppStep.SCRIPT)} 
+            />
+          )}
         </div>
       </main>
 
-      {showApiKeyModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-8 w-full max-w-md shadow-2xl">
-            <h3 className="text-xl font-bold mb-2">设置 API Key</h3>
-            <p className="text-slate-400 text-sm mb-6">请输入您的 Google Gemini API Key 以启用 AI 功能。</p>
-            <input 
-                type="password" 
-                placeholder="AI-..."
-                value={tempKey} 
-                onChange={(e) => setTempKey(e.target.value)} 
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-white mb-6 focus:border-orange-500 outline-none" 
-            />
-            <div className="flex justify-end gap-3">
-              <Button variant="ghost" onClick={() => setShowApiKeyModal(false)}>取消</Button>
-              <Button onClick={() => { localStorage.setItem('gemini_api_key', tempKey); setApiKey(tempKey); setShowApiKeyModal(false); }} className="bg-orange-600">保存并启用</Button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Removed showApiKeyModal logic to comply with no-UI-for-API-key guideline */}
     </div>
   );
 }

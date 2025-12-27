@@ -5,11 +5,21 @@ export interface Character {
   id: string;
   name: string;
   age: string;
-  role: string;
+  role: string; // 主角, 配角, 群众演员
   personality: string;
   appearance: string;
+  visualPrompt: string; // MJ/Jimeng prompt
   imageUrl?: string;
   imageLoading?: boolean;
+}
+
+export interface Scene {
+  id: string;
+  name: string;
+  description: string;
+  atmosphere: string;
+  props: string;
+  visualPrompt: string; // MJ/Jimeng prompt for set design
 }
 
 export interface EpisodePlan {
@@ -23,16 +33,17 @@ export interface ScriptProject {
   genre: Genre;
   outline: string; 
   characters: Character[];
+  scenes: Scene[];
   episodePlan: EpisodePlan[]; 
   episodes: Record<number, string>; 
-  scriptBible?: string; // Total outline, characters, scenes, etc.
+  scriptBible?: string; 
 }
 
 export enum AppStep {
   IDEA = 0,
   OUTLINE = 1,
-  CHARACTERS = 2,
-  SCRIPT = 3,
+  SCRIPT = 2,
+  CHARACTERS = 3,
 }
 
 export const PRESET_GENRES = [

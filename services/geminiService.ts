@@ -1,17 +1,16 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { Character, Genre, EpisodePlan } from "../types";
+import { Character, Genre, EpisodePlan, Scene } from "../types";
 
-const TEXT_MODEL = "gemini-3-flash-preview"; 
+// Using gemini-3-pro-preview for complex creative writing tasks as per guidelines
+const TEXT_MODEL = "gemini-3-pro-preview"; 
 const IMAGE_MODEL = "gemini-2.5-flash-image";
 
-const getClient = (apiKey: string) => {
-  if (!apiKey) throw new Error("请先在右上角设置 API Key");
-  return new GoogleGenAI({ apiKey });
-};
+// Initializing the GenAI client with the environment variable API key exclusively
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-export const generateOutlineOptions = async (apiKey: string, idea: string, genre: Genre): Promise<string[]> => {
-  const ai = getClient(apiKey);
+// Removed apiKey parameter from all service functions to comply with hard requirement of using process.env.API_KEY
+export const generateOutlineOptions = async (idea: string, genre: Genre): Promise<string[]> => {
   const prompt = `
     作为一名爆款短剧金牌编剧，请根据以下创意构思三个极其吸睛且内容极其丰富的故事大纲。
     类型：${genre}
@@ -35,28 +34,36 @@ export const generateOutlineOptions = async (apiKey: string, idea: string, genre
   return JSON.parse(response.text || "[]");
 };
 
-export const generateScriptBible = async (apiKey: string, outline: string, characters: Character[]): Promise<string> => {
-  const ai = getClient(apiKey);
+export const generateScriptBible = async (outline: string, characters: Character[], scenes: Scene[]): Promise<string> => {
   const prompt = `
-    基于以下剧本大纲和角色设定，生成一份详尽的【剧本总纲（Script Bible）】。
-    大纲：${outline}
+    基于以下剧本大纲、角色和场景，生成一份极其详尽的【剧本拍摄总纲（Production Bible）】。
+    
     角色：${JSON.stringify(characters)}
+    场景：${JSON.stringify(scenes)}
     
-    总纲需涵盖：
-    1. 【人物全档案】：涵盖姓名、角色定位、年龄、性格深度解析、服装风格指南、核心提示词。
-    2. 【场景视觉志】：剧本中主要出现的场景清单，每个场景需包含：场景描述、灯光氛围、关键道具、视觉基调。
-    3. 【世界观设定】：故事发生的背景、特殊规则。
-    4. 【全剧主旨】：剧本想传达的价值观或情感内核。
+    总纲需包含：
+    1. 【全角色深度档案】：姓名、地位、性格、成长弧光、核心台词风格、视觉提示词。
+    2. 【拍摄场景志】：所有核心场景的细致描写、光影要求、必备道具、美术制景建议。
+    3. 【美术与服装风格】：整体色调方案、不同阶层的服化道标准。
+    4. 【导演建议】：镜头语言、节奏控制。
     
-    格式：请使用清晰的 Markdown 格式。
+    格式：请使用清晰、专业的 Markdown 格式，严禁使用 **。
   `;
   const response = await ai.models.generateContent({ model: TEXT_MODEL, contents: prompt });
-  return response.text || "生成总纲失败";
+  return (response.text || "生成总纲失败").replace(/\*\*/g, '');
 };
 
-export const extractCharacters = async (apiKey: string, outline: string): Promise<Character[]> => {
-  const ai = getClient(apiKey);
-  const prompt = `根据剧本大纲提取3-5个爆款潜质角色。大纲：${outline}`;
+export const extractAllCharactersFromScript = async (scriptText: string): Promise<Character[]> => {
+  const prompt = `从以下剧本内容中提取所有出现的角色，并按主角、配角、群众演员分类。
+  
+  要求：
+  1. 深度分析性格、年龄、外貌细节。
+  2. 为每个角色编写一段极其详细的 Midjourney/即梦 视觉提示词 (Visual Prompt)，用于生成角色标准像（要求包含：构图、光影、服装材质、面部特征、风格描述）。
+  
+  剧本内容：${scriptText.slice(0, 15000)}
+  
+  请返回 JSON 数组。`;
+  
   const response = await ai.models.generateContent({
     model: TEXT_MODEL,
     contents: prompt,
@@ -69,11 +76,12 @@ export const extractCharacters = async (apiKey: string, outline: string): Promis
           properties: {
             name: { type: Type.STRING },
             age: { type: Type.STRING },
-            role: { type: Type.STRING },
+            role: { type: Type.STRING, description: "主角, 配角, 或 群众演员" },
             personality: { type: Type.STRING },
             appearance: { type: Type.STRING },
+            visualPrompt: { type: Type.STRING, description: "MJ/即梦 英文视觉提示词" },
           },
-          required: ["name", "age", "role", "personality", "appearance"],
+          required: ["name", "age", "role", "personality", "appearance", "visualPrompt"],
         },
       },
     },
@@ -82,22 +90,60 @@ export const extractCharacters = async (apiKey: string, outline: string): Promis
   return parsedData.map((char: any) => ({ ...char, id: crypto.randomUUID() }));
 };
 
-export const generateCharacterImage = async (apiKey: string, character: Character, genre: Genre): Promise<string> => {
-  const ai = getClient(apiKey);
-  const prompt = `Cinematic character design: ${character.name}, ${character.role} in a ${genre} story. 4k, detail. Description: ${character.appearance}`;
+export const extractScenesFromScript = async (scriptText: string): Promise<Scene[]> => {
+    const prompt = `从以下剧本内容中提取所有出现的拍摄场景。
+    
+    要求：
+    1. 提取场景名。
+    2. 详细描述场景布局、装修风格。
+    3. 给出灯光氛围建议、核心道具清单。
+    4. 编写一段 Midjourney/即梦 视觉提示词，用于生成场景参考图（包含：风格、光影、视角、细节描述）。
+    
+    剧本内容：${scriptText.slice(0, 15000)}
+    
+    请返回 JSON 数组。`;
+
+    const response = await ai.models.generateContent({
+        model: TEXT_MODEL,
+        contents: prompt,
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        name: { type: Type.STRING },
+                        description: { type: Type.STRING },
+                        atmosphere: { type: Type.STRING },
+                        props: { type: Type.STRING },
+                        visualPrompt: { type: Type.STRING, description: "MJ/即梦 视觉参考提示词" }
+                    },
+                    required: ["name", "description", "atmosphere", "props", "visualPrompt"]
+                }
+            }
+        }
+    });
+    const parsedData = JSON.parse(response.text || "[]");
+    return parsedData.map((scene: any) => ({ ...scene, id: crypto.randomUUID() }));
+};
+
+export const generateCharacterImage = async (character: Character, genre: Genre): Promise<string> => {
+  // Prioritize the generated visualPrompt if available
+  const prompt = character.visualPrompt || `Professional Cinematic character concept art: ${character.name}, a ${character.role} in a ${genre} story. Personality: ${character.personality}. Physical attributes: ${character.appearance}. 4k, high detail, studio lighting.`;
   const response = await ai.models.generateContent({
     model: IMAGE_MODEL,
     contents: { parts: [{ text: prompt }] }
   });
   for (const part of response.candidates?.[0]?.content?.parts || []) {
+    // Correctly iterating through parts to find image data as per guidelines
     if (part.inlineData) return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
   }
   throw new Error("No image data");
 };
 
-export const planEpisodes = async (apiKey: string, outline: string, count: number): Promise<EpisodePlan[]> => {
-    const ai = getClient(apiKey);
-    const prompt = `基于大纲规划 ${count} 集分集摘要。大纲：${outline}。要求每集都有极强的悬念和钩子。`;
+export const planEpisodes = async (outline: string, count: number): Promise<EpisodePlan[]> => {
+    const prompt = `基于大纲规划 ${count} 集分集摘要。大纲：${outline}。要求每集都有极强的悬念。请确保生成 ${count} 个分集。`;
     const response = await ai.models.generateContent({
       model: TEXT_MODEL,
       contents: prompt,
@@ -120,43 +166,43 @@ export const planEpisodes = async (apiKey: string, outline: string, count: numbe
     return JSON.parse(response.text || "[]");
 };
 
-export const generateEpisodeScript = async (apiKey: string, outline: string, characters: Character[], episodePlan: EpisodePlan, prevContent: string): Promise<string> => {
-  const ai = getClient(apiKey);
-  const prompt = `撰写第 ${episodePlan.number} 集：${episodePlan.title}。摘要：${episodePlan.summary}。前情提要：${prevContent.slice(-400)}。
+export const generateEpisodeScript = async (outline: string, characters: Character[], episodePlan: EpisodePlan, prevContent: string): Promise<string> => {
+  const prompt = `撰写第 ${episodePlan.number} 集：${episodePlan.title}。摘要：${episodePlan.summary}。前情提要：${prevContent.slice(-600)}。
   
   格式要求：
-  1. 使用标准的影视专业剧本格式（场景名、角色名、台词、动作描写）。
-  2. 严禁出现 markdown 的粗体符号（即禁止使用 ** ）。
-  3. 增加冲突对白，提升短剧爽感。`;
+  1. 专业剧本格式。
+  2. 严格禁止粗体 ** 符号。
+  3. 增加极具张力的台词。`;
   
   const response = await ai.models.generateContent({ model: TEXT_MODEL, contents: prompt });
   let text = response.text || "生成失败";
-  
-  // 强制去除所有 ** 符号
   return text.replace(/\*\*/g, '');
 };
 
-export const extendStory = async (apiKey: string, outline: string, characters: Character[], lastPlan: EpisodePlan): Promise<EpisodePlan> => {
-  const ai = getClient(apiKey);
-  const prompt = `续写第 ${lastPlan.number + 1} 集规划。上集：${lastPlan.summary}。严禁出现 ** 符号。`;
+export const extendStory = async (outline: string, lastPlan: EpisodePlan, count: number): Promise<EpisodePlan[]> => {
+  const prompt = `接着第 ${lastPlan.number} 集，继续规划后面 ${count} 集的内容。要求保持一致性并增加新钩子。`;
   const response = await ai.models.generateContent({
     model: TEXT_MODEL,
     contents: prompt,
     config: {
       responseMimeType: "application/json",
       responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-            number: { type: Type.INTEGER },
-            title: { type: Type.STRING },
-            summary: { type: Type.STRING }
-        },
-        required: ["number", "title", "summary"]
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+              number: { type: Type.INTEGER },
+              title: { type: Type.STRING },
+              summary: { type: Type.STRING }
+          },
+          required: ["number", "title", "summary"]
+        }
       }
     }
   });
-  const res = JSON.parse(response.text || "{}");
-  if (res.title) res.title = res.title.replace(/\*\*/g, '');
-  if (res.summary) res.summary = res.summary.replace(/\*\*/g, '');
-  return res;
+  return JSON.parse(response.text || "[]").map((p: any) => ({
+    ...p,
+    title: p.title.replace(/\*\*/g, ''),
+    summary: p.summary.replace(/\*\*/g, '')
+  }));
 };
